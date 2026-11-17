@@ -1,0 +1,7 @@
+support-request:
+  comment: >
+    :wave: @{issue-author} sorry but this is not the place to ask for help.
+
+    For help please use our [Discord server](https://discord.gg/librenms) or the [community site](https://community.librenms.org/c/help): https://docs.librenms.org/Support
+    
+  close: true

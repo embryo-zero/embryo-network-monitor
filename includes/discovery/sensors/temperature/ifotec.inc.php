@@ -1,0 +1,49 @@
+<?php
+
+/**
+ * ifotec.inc.php
+ *
+ * Ifotec temperature sensors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * @link       https://www.librenms.org
+ *
+ * @copyright  LibreNMS contributors
+ * @author     Cedric MARMONIER
+ */
+
+use LibreNMS\Enum\SensorType;
+
+$index = 0;
+foreach ($pre_cache['ifoTemperatureTable'] ?? [] as $ifoSensor) {
+    discover_sensor(
+        null,
+        SensorType::Temperature,
+        $device,
+        $ifoSensor['ifoTempValue']['oid'],
+        $ifoSensor['ifoTempName']['value'], // each sensor id must be unique
+        'ifotecSensor',
+        $ifoSensor['ifoTempDescr']['value'],
+        10, // divider
+        1, // multiplier
+        (float) $ifoSensor['ifoTempLowThldAlarm']['value'],
+        (float) $ifoSensor['ifoTempLowThldWarning']['value'],
+        (float) $ifoSensor['ifoTempHighThldWarning']['value'],
+        (float) $ifoSensor['ifoTempHighThldAlarm']['value'],
+        (float) $ifoSensor['ifoTempValue']['value']
+    );
+
+    $index++;
+}

@@ -1,0 +1,102 @@
+<?php
+
+/**
+ * Module.php
+ *
+ * LibreNMS Discovery/Poller Module
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * @link       https://www.librenms.org
+ *
+ * @copyright  2018 Tony Murray
+ * @author     Tony Murray <murraytony@gmail.com>
+ */
+
+namespace LibreNMS\Interfaces;
+
+use App\Models\Device;
+use LibreNMS\Enum\PollingMethodType;
+use LibreNMS\Interfaces\Data\DataStorageInterface;
+use LibreNMS\Interfaces\Data\WriteInterface;
+use LibreNMS\OS;
+
+interface Module
+{
+    /**
+     * An array of all modules this module depends on
+     */
+    public function dependencies(): array;
+
+    /**
+     * The polling methods this module can get data from, in order of preference.
+     * Offered when one is enabled, enabled by default when a non-SNMP one is.
+     *
+     * @return list<PollingMethodType>
+     */
+    public function pollingMethods(Device $device): array;
+
+    /**
+     * Should discovery run for this device? Only called when the module is enabled.
+     */
+    public function shouldDiscover(OS $os): bool;
+
+    /**
+     * Should polling run for this device? Only called when the module is enabled.
+     */
+    public function shouldPoll(OS $os): bool;
+
+    /**
+     * Discover this module. Heavier processes can be run here
+     * Run infrequently (default 4 times a day)
+     *
+     * @param  OS  $os
+     */
+    public function discover(OS $os): void;
+
+    /**
+     * Poll data for this module and update the DB / RRD.
+     * Try to keep this efficient and only run if discovery has indicated there is a reason to run.
+     * Run frequently (default every 5 minutes)
+     *
+     * Modules may declare just the interface they use, new code should use WriteInterface.
+     *
+     * @param  OS  $os
+     */
+    public function poll(OS $os, DataStorageInterface&WriteInterface $datastore): void;
+
+    /**
+     * Check if data exists for this module
+     */
+    public function dataExists(Device $device): bool;
+
+    /**
+     * Remove all DB data for this module.
+     * This will be run when the module is disabled.
+     *
+     * @param  Device  $device
+     */
+    public function cleanup(Device $device): int;
+
+    /**
+     * Dump current module data for the given device for tests.
+     * Make sure to hide transient fields, such as id and date.
+     * You should always order the data by a non-transient column.
+     * Some id fields may need to be joined to tie back to non-transient data.
+     * Module may return null if testing is not supported or required.
+     *
+     * @param  string  $type  Type is either discovery or poller
+     */
+    public function dump(Device $device, string $type): ?array;
+}

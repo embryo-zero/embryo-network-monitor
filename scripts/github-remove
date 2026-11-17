@@ -1,0 +1,19 @@
+#!/bin/sh
+# Deprecated: use lnms patch:remove
+
+LIBRENMS_DIR=$(dirname "$(readlink -f "$0/..")")
+
+case "$1" in
+    -d|--discard)
+        echo "Note: github-remove -d is replaced by: lnms patch:remove --reset" >&2
+        exec "$LIBRENMS_DIR/lnms" patch:remove --reset
+        ;;
+    -s|--save|-r|--restore)
+        echo "github-remove $1 has been removed, use git stash directly." >&2
+        exit 1
+        ;;
+    *)
+        echo "Note: github-remove is replaced by: lnms patch:remove [pr]" >&2
+        exec "$LIBRENMS_DIR/lnms" patch:remove "$@"
+        ;;
+esac

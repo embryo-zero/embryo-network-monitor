@@ -1,0 +1,346 @@
+<?php
+
+/**
+ * IP.php
+ *
+ * -Description-
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * @link       https://www.librenms.org
+ *
+ * @copyright  2017 Tony Murray
+ * @author     Tony Murray <murraytony@gmail.com>
+ */
+
+namespace LibreNMS\Util;
+
+use Generator;
+use LibreNMS\Exceptions\InvalidIpException;
+
+/**
+ * @implements \IteratorAggregate<int, string>
+ */
+abstract class IP implements \IteratorAggregate, \Stringable
+{
+    public $ip;
+    public $cidr;
+    public $host_bits;
+
+    /**
+     * Convert a hex-string to an IP address. For example: "c0 a8 01 fe" -> 192.168.1.254
+     *
+     * @param  string  $hex
+     * @param  bool  $ignore_errors  Do not throw exceptions, instead return null on error.
+     * @return IP|null
+     *
+     * @throws InvalidIpException
+     */
+    public static function fromHexString($hex, $ignore_errors = false)
+    {
+        $hex = str_replace([' ', '"'], '', $hex);
+
+        try {
+            return self::parse($hex);
+        } catch (InvalidIpException) {
+            // ignore
+        }
+
+        $hex = str_replace([':', '.'], '', $hex);
+
+        // check if hex was incorrectly converted to ascii
+        $len = strlen($hex);
+        if (($len == 4 || $len == 16) && preg_match('/[^0-9a-fA-F]/', $hex)) {
+            $hex = StringHelpers::asciiToHex($hex);
+        }
+
+        try {
+            if (strlen($hex) == 8) {
+                return new IPv4(long2ip(hexdec($hex)));
+            }
+
+            if (strlen($hex) == 32) {
+                return new IPv6(implode(':', str_split($hex, 4)));
+            }
+        } catch (InvalidIpException $e) {
+            if (! $ignore_errors) {
+                throw $e;
+            }
+        }
+
+        if (! $ignore_errors) {
+            throw new InvalidIpException("Could not parse into IP: $hex");
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert a decimal space-separated string to an IP address. For example:
+     * "192 168 1 154" -> 192.168.1.254
+     * "32 01 72 96 72 96 00 00 00 00 00 00 00 00 136 136" -> 2001:4860:4860::8888
+     *
+     * @param  string  $snmpOid
+     * @param  bool  $ignore_errors  Do not throw exceptions, instead return null on error.
+     * @return IP|null
+     *
+     * @throws InvalidIpException
+     */
+    public static function fromSnmpString($snmpOid, $ignore_errors = false)
+    {
+        $snmpOid = str_replace(['.', '"'], ' ', $snmpOid);
+        $hex = implode(
+            ':',
+            array_map(
+                fn ($dec) => sprintf('%02x', $dec),
+                explode(' ', (string) $snmpOid)
+            )
+        );
+
+        return IP::fromHexString($hex, $ignore_errors);
+    }
+
+    /**
+     * Parse an IP or IP Network into an IP object. Works with IPv6 and IPv4 addresses.
+     *
+     * @param  string  $ip
+     * @param  bool  $ignore_errors  Do not throw exceptions, instead return null on error.
+     * @return IP|null
+     *
+     * @throws InvalidIpException
+     */
+    public static function parse($ip, $ignore_errors = false)
+    {
+        try {
+            return new IPv4($ip);
+        } catch (InvalidIpException) {
+            // ignore ipv4 failure and try ipv6
+        }
+
+        try {
+            return new IPv6($ip);
+        } catch (InvalidIpException) {
+            if (! $ignore_errors) {
+                throw new InvalidIpException("$ip is not a valid IP address");
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if the supplied IP is valid.
+     *
+     * @param  string  $ip
+     * @param  bool  $exclude_reserved  Exclude reserved IP ranges.
+     * @return bool
+     */
+    public static function isValid($ip, $exclude_reserved = false)
+    {
+        return IPv4::isValid($ip, $exclude_reserved) || IPv6::isValid($ip, $exclude_reserved);
+    }
+
+    /**
+     * Get the network of this IP in cidr format.
+     *
+     * @param  int  $cidr  If not given will use the cidr stored with this IP
+     * @return string
+     */
+    public function getNetwork($cidr = null)
+    {
+        $cidr ??= $this->cidr;
+
+        return $this->getNetworkAddress($cidr) . "/$cidr";
+    }
+
+    /**
+     * Get the network address of this IP
+     *
+     * @param  int  $cidr  If not given will use the cidr stored with this IP
+     * @return string
+     */
+    abstract public function getNetworkAddress($cidr = null);
+
+    /**
+     * Check if this IP address is contained inside the network
+     *
+     * @param  string  $network  should be in cidr format.
+     * @return mixed
+     */
+    abstract public function inNetwork($network);
+
+    /**
+     * Iterate over the usable addresses in this IP's network.
+     *
+     * A host address (a /32 or /128) yields only itself. Implementations may
+     * omit addresses which are not usable by hosts, such as an IPv4 network
+     * and broadcast address.
+     *
+     * @return Generator<int, string>
+     */
+    abstract public function getIterator(): Generator;
+
+    /**
+     * The number of addresses getIterator() yields, a float when there are more than an int holds.
+     */
+    public function addressCount(): int|float
+    {
+        $count = 2 ** ($this->host_bits - $this->cidr);
+
+        // the first and last addresses are skipped, except for point-to-point and host prefixes
+        return $count > 2 ? $count - 2 : $count;
+    }
+
+    /**
+     * Check if this network yields every address the other network yields.
+     */
+    public function includes(IP $network): bool
+    {
+        [$first, $last] = $this->range();
+        [$otherFirst, $otherLast] = $network->range();
+
+        return strlen($first) === strlen($otherFirst) // the same address family
+            && strcmp($first, $otherFirst) <= 0
+            && strcmp($otherLast, $last) <= 0;
+    }
+
+    /**
+     * The first and last address getIterator() yields, packed, so they compare in address order with strcmp().
+     *
+     * @return array{string, string}
+     */
+    protected function range(): array
+    {
+        $first = (string) inet_pton($this->getNetworkAddress());
+        $last = $first;
+        for ($bit = $this->cidr; $bit < $this->host_bits; $bit++) {
+            $byte = intdiv($bit, 8);
+            $last[$byte] = chr(ord($last[$byte]) | (1 << (7 - $bit % 8)));
+        }
+
+        // the first and last addresses are skipped, except for point-to-point and host prefixes
+        if ($this->cidr < $this->host_bits - 1) {
+            $first[-1] = chr(ord($first[-1]) | 1);
+            $last[-1] = chr(ord($last[-1]) & 0xFE);
+        }
+
+        return [$first, $last];
+    }
+
+    /**
+     * Check if this IP is in one of multiple networks
+     *
+     * @param  array  $networks
+     * @return bool
+     */
+    public function inNetworks($networks)
+    {
+        return array_any((array) $networks, fn ($network) => $this->inNetwork($network));
+    }
+
+    /**
+     * @return bool
+     */
+    public function isLinkLocal()
+    {
+        return false; // IPv4 has no concept of link local, overridden for IPv6
+    }
+
+    /**
+     * Check if this IP is in the reserved range.
+     *
+     * @return bool
+     */
+    public function isReserved()
+    {
+        return filter_var($this->ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE) === false;
+    }
+
+    /**
+     * Remove extra 0s from this IPv6 address to make it easier to read.
+     * IPv4 addresses, just return the address.
+     *
+     * @return string|false
+     */
+    public function compressed()
+    {
+        return (string) $this->ip;
+    }
+
+    /**
+     * Expand this IPv6 address to it's full IPv6 representation. For example: ::1 -> 0000:0000:0000:0000:0000:0000:0000:0001
+     * IPv4 addresses, just return the address.
+     *
+     * @return string
+     */
+    public function uncompressed()
+    {
+        return (string) $this->ip;
+    }
+
+    /**
+     * Packed address for storage in database
+     *
+     * return string
+     */
+    public function packed()
+    {
+        return inet_pton((string) $this->ip);
+    }
+
+    /**
+     * Get the family of this IP.
+     *
+     * @return string ipv4 or ipv6
+     */
+    public function getFamily()
+    {
+        return $this->host_bits == 32 ? 'ipv4' : 'ipv6';
+    }
+
+    public function __toString(): string
+    {
+        if ($this->cidr == $this->host_bits) {
+            return (string) $this->compressed();
+        }
+
+        return $this->compressed() . "/{$this->cidr}";
+    }
+
+    /**
+     * Extract an address from a cidr, assume a host is given if it does not contain /
+     *
+     * @param  string  $ip
+     * @return array{0: string, 1: int} [$ip, $cidr]
+     */
+    protected function extractCidr($ip): array
+    {
+        $parts = explode('/', $ip, 2);
+        $addr = $parts[0];
+        $cidr = $parts[1] ?? $this->host_bits;
+
+        if (! ctype_digit((string) $cidr) || (int) $cidr < 0 || (int) $cidr > $this->host_bits) {
+            throw new InvalidIpException("$ip does not contain a valid CIDR prefix");
+        }
+
+        return [$addr, (int) $cidr];
+    }
+
+    /**
+     * Convert this IP to an snmp index hex encoded
+     *
+     * @return string
+     */
+    abstract public function toSnmpIndex();
+}

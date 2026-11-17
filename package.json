@@ -1,0 +1,30 @@
+{
+    "$schema": "https://www.schemastore.org/package.json",
+    "private": true,
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build"
+    },
+    "devDependencies": {
+        "@tailwindcss/vite": "^4.2.0",
+        "axios": "^1.20.0",
+        "bootstrap": "^4.5.3",
+        "jquery": "^3.5.1",
+        "laravel-vite-plugin": "^3.1",
+        "lodash": "^4.18.1",
+        "postcss": "^8.5.23",
+        "tailwindcss": "^4.2.0",
+        "vite": "^8.3"
+    },
+    "dependencies": {
+        "@alpinejs/collapse": "^3.17.4",
+        "@alpinejs/intersect": "^3.15.12",
+        "@alpinejs/sort": "^3.17.4",
+        "@popperjs/core": "^2.11.8",
+        "alpinejs": "^3.14.9",
+        "es6-object-assign": "^1.1.0",
+        "gridstack": "^12.6.0",
+        "luxon": "^3.7.2",
+        "prismjs": "^1.30.0"
+    }
+}

@@ -1,0 +1,288 @@
+<?php
+
+/**
+ * LibreNMS
+ *
+ *   This file is part of LibreNMS.
+ *
+ * @copyright  (C) 2006 - 2012 Adam Armstrong
+ */
+
+use App\Facades\DeviceCache;
+use App\Facades\LibrenmsConfig;
+use App\Models\StateTranslation;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+
+/**
+ * Check if port is valid to poll.
+ * Settings: empty_ifdescr, good_if, bad_if, bad_if_regexp, bad_ifname_regexp, bad_ifalias_regexp, bad_iftype, bad_ifoperstatus
+ *
+ * @param  array  $port
+ * @param  array  $device
+ * @return bool
+ */
+function is_port_valid($port, $device)
+{
+    // check empty values first
+    if (empty($port['ifDescr'])) {
+        // If these are all empty, we are just going to show blank names in the ui
+        if (empty($port['ifAlias']) && empty($port['ifName'])) {
+            Log::debug('ignored: empty ifDescr, ifAlias and ifName');
+
+            return false;
+        }
+
+        // ifDescr should not be empty unless it is explicitly allowed
+        if (! LibrenmsConfig::getOsSetting($device['os'], 'empty_ifdescr', LibrenmsConfig::get('empty_ifdescr', false))) {
+            Log::debug('ignored: empty ifDescr');
+
+            return false;
+        }
+    }
+
+    $ifDescr = $port['ifDescr'];
+    $ifName = $port['ifName'] ?? '';
+    $ifAlias = $port['ifAlias'] ?? '';
+    $ifType = $port['ifType'] ?? '';
+    $ifOperStatus = $port['ifOperStatus'] ?? '';
+
+    if (Str::contains($ifDescr, LibrenmsConfig::getOsSetting($device['os'], 'good_if', LibrenmsConfig::get('good_if')), ignoreCase: true)) {
+        return true;
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_if') as $bi) {
+        if (Str::contains($ifDescr, $bi, ignoreCase: true)) {
+            Log::debug("ignored by ifDescr: $ifDescr (matched: $bi)");
+
+            return false;
+        }
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_if_regexp') as $bir) {
+        if (preg_match($bir . 'i', (string) $ifDescr)) {
+            Log::debug("ignored by ifDescr: $ifDescr (matched: $bir)");
+
+            return false;
+        }
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_ifname_regexp') as $bnr) {
+        if (preg_match($bnr . 'i', $ifName)) {
+            Log::debug("ignored by ifName: $ifName (matched: $bnr)");
+
+            return false;
+        }
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_ifalias_regexp') as $bar) {
+        if (preg_match($bar . 'i', $ifAlias)) {
+            Log::debug("ignored by ifAlias: $ifAlias (matched: $bar)");
+
+            return false;
+        }
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_iftype') as $bt) {
+        if (Str::contains($ifType, $bt)) {
+            Log::debug("ignored by ifType: $ifType (matched: $bt )");
+
+            return false;
+        }
+    }
+
+    foreach (LibrenmsConfig::getCombined($device['os'], 'bad_ifoperstatus') as $bos) {
+        if (Str::contains($ifOperStatus, $bos)) {
+            Log::debug("ignored by ifOperStatus: $ifOperStatus (matched: $bos)");
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Try to fill in data for ifDescr, ifName, and ifAlias if devices do not provide them.
+ * Will not fill ifAlias if the user has overridden it
+ * Also trims the data
+ *
+ * @param  array  $port
+ * @param  array  $device
+ */
+function port_fill_missing_and_trim(&$port, $device)
+{
+    $port['ifDescr'] = isset($port['ifDescr']) ? trim($port['ifDescr']) : null;
+    $port['ifAlias'] = isset($port['ifAlias']) ? trim($port['ifAlias']) : null;
+    $port['ifName'] = isset($port['ifName']) ? trim($port['ifName']) : null;
+
+    // When devices do not provide data, populate with other data if available
+    if (! isset($port['ifDescr']) || $port['ifDescr'] == '') {
+        $port['ifDescr'] = $port['ifName'];
+        Log::debug(' Using ifName as ifDescr');
+    }
+    if (! isset($port['ifName']) || $port['ifName'] == '') {
+        $port['ifName'] = $port['ifDescr'];
+        Log::debug(' Using ifDescr as ifName');
+    }
+    $attrib = DeviceCache::get($device['device_id'] ?? null)->getAttrib('ifName:' . $port['ifName']);
+    if (! empty($attrib)) {
+        // ifAlias overridden by user, don't update it
+        unset($port['ifAlias']);
+        Log::debug(' ifAlias overriden by user');
+    } elseif (! isset($port['ifAlias']) || $port['ifAlias'] == '') {
+        $port['ifAlias'] = $port['ifDescr'];
+        Log::debug(' Using ifDescr as ifAlias');
+    }
+}
+
+/**
+ * Create a new state index.  Update translations if $states is given.
+ *
+ * For for backward compatibility:
+ *   Returns null if $states is empty, $state_name already exists, and contains state translations
+ *
+ * @param  string  $state_name  the unique name for this state translation
+ * @param  array  $states  array of states, each must contain keys: descr, graph, value, generic
+ * @return void
+ */
+function create_state_index($state_name, $states = []): void
+{
+    app('sensor-discovery')->withStateTranslations($state_name, array_map(fn ($state) => new StateTranslation([
+        'state_descr' => $state['descr'],
+        'state_value' => $state['value'],
+        'state_generic_value' => $state['generic'],
+    ]), $states));
+}
+
+function hytera_h2f($number, $nd)
+{
+    if (strlen(str_replace(' ', '', $number)) == 4) {
+        $number = \LibreNMS\Util\StringHelpers::asciiToHex($number, ' ');
+    }
+    $r = '';
+    $y = explode(' ', (string) $number);
+    foreach ($y as $z) {
+        $r = $z . '' . $r;
+    }
+
+    $hex = [];
+    $number = substr($r, 0, -1);
+    //$number = str_replace(" ", "", $number);
+    for ($i = 0; $i < strlen($number); $i++) {
+        $hex[] = substr($number, $i, 1);
+    }
+
+    $dec = [];
+    $hexCount = count($hex);
+    for ($i = 0; $i < $hexCount; $i++) {
+        $dec[] = hexdec($hex[$i]);
+    }
+
+    $binfinal = '';
+    $decCount = count($dec);
+    for ($i = 0; $i < $decCount; $i++) {
+        $binfinal .= sprintf('%04d', decbin($dec[$i]));
+    }
+
+    $sign = substr($binfinal, 0, 1);
+    $exp = substr($binfinal, 1, 8);
+    $exp = bindec($exp);
+    $exp -= 127;
+    $scibin = substr($binfinal, 9);
+    $binint = substr($scibin, 0, $exp);
+    $binpoint = substr($scibin, $exp);
+    $intnumber = bindec('1' . $binint);
+
+    $tmppoint = [];
+    for ($i = 0; $i < strlen($binpoint); $i++) {
+        $tmppoint[] = substr($binpoint, $i, 1);
+    }
+
+    $tmppoint = array_reverse($tmppoint);
+    $tpointnumber = min(number_format($tmppoint[0] / 2, strlen($binpoint), '.', ''), 1);
+
+    $pointnumber = '';
+    for ($i = 1; $i < strlen($binpoint); $i++) {
+        $pointnumber = number_format($tpointnumber / 2, strlen($binpoint), '.', '');
+        $tpointnumber = $tmppoint[$i + 1] . substr($pointnumber, 1);
+    }
+
+    $floatfinal = $intnumber + $pointnumber;
+
+    if ($sign == 1) {
+        $floatfinal = -$floatfinal;
+    }
+
+    return number_format($floatfinal, $nd, '.', '');
+}
+
+/**
+ * The number of OIDs to request at once from the device's SNMP polling method settings.
+ *
+ * @param  array  $device
+ * @return int
+ */
+function get_device_oid_limit($device): int
+{
+    return DeviceCache::get($device['device_id'] ?? null)->polling()->snmp()->maxOid;
+}
+
+/**
+ * If Distributed, create a lock, then purge the mysql table
+ *
+ * @param  string  $table
+ * @param  string  $sql
+ * @return int exit code
+ */
+function lock_and_purge($table, $sql)
+{
+    $purge_name = $table . '_purge';
+    $lock = Cache::lock($purge_name, 86000);
+    if ($lock->get()) {
+        $purge_days = LibrenmsConfig::get($purge_name);
+
+        $name = str_replace('_', ' ', ucfirst($table));
+        if (is_numeric($purge_days)) {
+            if (\Illuminate\Support\Facades\DB::table($table)->whereRaw($sql, [$purge_days])->delete()) {
+                echo "$name cleared for entries over $purge_days days\n";
+            }
+        }
+        $lock->release();
+
+        return 0;
+    }
+
+    return -1;
+}
+
+/**
+ * If Distributed, create a lock, then purge the mysql table according to the sql query
+ *
+ * @param  string  $table
+ * @param  string  $sql
+ * @param  string  $msg
+ * @return int exit code
+ */
+function lock_and_purge_query($table, $sql, $msg)
+{
+    $purge_name = $table . '_purge';
+
+    $purge_duration = LibrenmsConfig::get($purge_name);
+    if (! (is_numeric($purge_duration) && $purge_duration > 0)) {
+        return -2;
+    }
+    $lock = Cache::lock($purge_name, 86000);
+    if ($lock->get()) {
+        if (DB::statement($sql, [$purge_duration])) {
+            printf($msg, $purge_duration);
+        }
+        $lock->release();
+
+        return 0;
+    }
+
+    return -1;
+}

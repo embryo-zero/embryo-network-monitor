@@ -1,0 +1,169 @@
+# Rancid
+
+Librenms can generate a list of hosts that can be monitored by
+RANCID. This section assumes a running Rancid. You
+need to create and update the file 'router.db'
+
+## Included Rancid script
+
+To generate the config file (maybe even add a cron to schedule
+this). This section assumes some Rancid locations. The config file that you
+want to call it and where LibreNMS is:
+
+```bash
+cd /opt/librenms/scripts/
+php ./gen_rancid.php > /the/path/where/is/rancid/core/router.db
+```
+
+Sample cron:
+
+```bash
+15   0    * * * root cd /opt/librenms/scripts && php ./gen_rancid.php > /the/path/where/is/rancid/core/router.db
+```
+
+Now configure LibreNMS (make sure you point dir to your rancid data directory):
+
+```php
+$config['rancid_configs']['core'] = '/the/path/where/is/rancid/core';
+$config['rancid_ignorecomments'] = 0;
+```
+
+A "config" tab then appears on each router with a rancid update.
+
+## Rancid Bare Git Repository
+
+Rancid has capability to version the configuration files in Git, and it can push
+the commits to a remote repository which is bare, that is it lacks a
+worktree.
+
+If the bare repository is at `/some/path/rancid.git` and the configuration files
+are in the `configs` directory in Git, then that bare Git repository can be integrated
+by the following configuration:
+
+```
+$config['rancid_configs'][] = '/some/path/rancid.git/configs';
+$config['rancid_repo_type'] = 'git-bare';
+```
+
+## Ubuntu Rancid Install
+
+The options shown below also contains the default values.
+
+> NOTE: this section applies only to Ubuntu 16.04. It can fail on
+> another distribution.
+
+`sudo apt-get install rancid subversion`
+
+Edit Rancid config file to use subversion or git instead of default
+cvs, and adds a group:
+`sudo vi /etc/rancid/rancid.conf`
+
+`LIST_OF_GROUPS="librenms"`
+
+Now change these two lines:
+
+```
+CVSROOT=$BASEDIR/CVS; export CVSROOT
+RCSSYS=cvs; export RCSSYS
+```
+
+to:
+
+```
+CVSROOT=$BASEDIR/SVN; export CVSROOT
+RCSSYS=svn; export RCSSYS
+```
+
+NOTE - This only creates 1 group! You can of course make more when you
+learn the process. This example is a basic working setup.
+
+`sudo su -c /var/lib/rancid/bin/rancid-cvs -s /bin/bash -l rancid`
+> NOTE - do NOT change cvs to svn here! Leave command as is!
+
+Get a list of devices from Librenms you can pull configs from:
+
+```
+cd /opt/librenms/scripts
+sudo ./gen_rancid.php
+```
+
+Copy the output. Replace all ":" with ";" example:
+
+```
+alphcr1:cisco:up will change to:
+alphcr1;cisco;up
+```
+
+copy and paste results into the below file:
+`sudo vi /var/lib/rancid/librenms/router.db`
+
+NOTE - This ONLY applies to newer RANCID versions and Linux
+distributions. An older version keeps the `:` and does not use the `;`
+
+Create/edit rancids login file:
+
+`sudo vi /var/lib/rancid/.cloginrc`
+
+Add following at minimum:
+
+```
+add user * <your username here>
+add password * <your password here>
+add method * ssh
+add noenable * {1}                         ******This disables the enable when using radius etc *******
+```
+
+Grant permissions for rancid:
+
+```
+sudo chown rancid /var/lib/rancid/.cloginrc
+sudo chmod 600 /var/lib/rancid/.cloginrc
+```
+
+Test config:
+`sudo /usr/lib/rancid/bin/clogin -f /var/lib/rancid/.cloginrc <device hostname>`
+
+NOTE: IF you run into a 'diffie-hellman' kind of error, then it is
+because your Linux distro is using newer encryption methods
+and more. This message means that the device that you
+tested on is running an outdated encryption type. I recommend updating
+downstream device where possible. If you cannot, this command corrects
+the problem:
+
+`sudo vi /etc/ssh/ssh_config`
+
+Add:
+
+`KexAlgorithms diffie-hellman-group1-sha1`
+
+Re-try logging into your device again
+
+Upon success, run rancid:
+
+`sudo su -c /var/lib/rancid/bin/rancid-run -s /bin/bash -l rancid`
+
+Ensure your configs pulled:
+
+```
+sudo su - rancid
+cd librenms/configs/
+ls
+```
+
+Make sure your config files are there :-)
+
+```
+sudo usermod -a -G rancid librenms
+```
+
+Add Rancid into LibreNMS config.php:
+
+```php
+### Rancid
+$config['rancid_configs'][]             = '/var/lib/rancid/librenms/configs/';
+$config['rancid_repo_type']             = 'svn';  //'svn', 'git', 'git-bare' or 'cvs' (cvs shows the current config only)
+$config['rancid_ignorecomments']        = 0;
+```
+
+Now restart apache
+`sudo /etc/init.d/apache2 restart`
